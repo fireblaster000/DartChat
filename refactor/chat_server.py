@@ -76,7 +76,7 @@ class SecureChatServer:
             for client, info in list(self.clients.items()):
                 if info['room'] == room and client != exclude_client:
                     clients_to_send.append(client)
-        
+
         # Send outside the lock to avoid deadlock
         for client in clients_to_send:
             try:
@@ -188,7 +188,7 @@ class SecureChatServer:
                     'username': username,
                     'content': content,
                     'timestamp': datetime.datetime.now().strftime("%H:%M:%S")
-                }, current_room, exclude_client=client)
+                }, current_room)
 
         elif msg_type == 'list_users':
             users = list(self.rooms[current_room].members)
@@ -197,7 +197,7 @@ class SecureChatServer:
                 'room': current_room,
                 'users': users
             })
-        
+
         elif msg_type == 'list_rooms':
             self.send_message(client, {
                 'type': 'room_list',
@@ -225,7 +225,7 @@ class SecureChatServer:
                     'type': 'system',
                     'message': f"User '{target}' not found"
                 })
-        
+
         elif msg_type == 'create_room':
             room_name = message.get('room_name', '').strip()
             if room_name and room_name not in self.rooms:
@@ -234,12 +234,16 @@ class SecureChatServer:
                     'type': 'system',
                     'message': f"Room '{room_name}' created"
                 })
+                self.send_message(client, {
+                    'type': 'room_list',
+                    'rooms': list(self.rooms.keys())
+                })
             else:
                 self.send_message(client, {
                     'type': 'system',
                     'message': f"Room '{room_name}' already exists"
                 })
-        
+
         elif msg_type == 'join_room':
             room_name = message.get('room_name', '').strip()
             if room_name in self.rooms:
@@ -249,15 +253,16 @@ class SecureChatServer:
                 self.broadcast_message({
                     'type': 'system',
                     'message': f"{username} left the room"
-                }, old_room, exclude_client=client)
-                
+                }, old_room)
+
                 # Join new room
                 with self.clients_lock:
                     self.clients[client]['room'] = room_name
-                
+
                 self.rooms[room_name].add_member(username)
                 self.send_message(client, {
-                    'type': 'system',
+                    'type': 'room_changed',
+                    'room': room_name,
                     'message': f"Joined room '{room_name}'"
                 })
                 self.broadcast_message({
@@ -269,7 +274,7 @@ class SecureChatServer:
                     'type': 'system',
                     'message': f"Room '{room_name}' does not exist"
                 })
-    
+
     def disconnect_client(self, client: socket.socket, username: Optional[str]):
         """Cleanup disconnect"""
         if not username:
@@ -281,7 +286,7 @@ class SecureChatServer:
             except:
                 pass
             return
-        
+
         print(f"[!] Cleaning up client {username}")
 
         room = None
@@ -290,56 +295,56 @@ class SecureChatServer:
                 print(f"    Client info: {self.clients[client]}")
                 room = self.clients[client]['room']
                 del self.clients[client]
-                
+
             if username in self.username_map:
                 del self.username_map[username]
-        
+
         # Remove from room and broadcast OUTSIDE the lock
         if room and room in self.rooms:
             print(f"    Removing from room: {room}")
             self.rooms[room].remove_member(username)
-            
+
             # Broadcast disconnect message
             self.broadcast_message({
                 'type': 'system',
                 'message': f"{username} left the chat"
             }, room)
-        
+
         print(f"[-] {username} disconnected")
-        
+
         try:
             client.close()
         except:
             pass
-    
+
     def start(self):
         """Start server"""
         self.running = True
         ssl_context = self.create_ssl_context()
-        
+
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server_socket.bind((self.host, self.port))
         server_socket.listen(5)
-        
+
         print(f"[✓] Secure Chat Server started on {self.host}:{self.port}")
         print(f"[✓] TLS encryption enabled")
         print(f"[✓] Waiting for connections...\n")
-        
+
         try:
             while self.running:
                 client_socket, address = server_socket.accept()
                 secure_client = ssl_context.wrap_socket(client_socket, server_side=True)
-                
+
                 threading.Thread(
                     target=self.handle_client,
                     args=(secure_client, address),
                     daemon=True
                 ).start()
-        
+
         except KeyboardInterrupt:
             pass
-        
+
         finally:
             self.running = False
             server_socket.close()
