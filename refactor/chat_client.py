@@ -24,141 +24,93 @@ class SecureChatClient:
     def create_ssl_context(self) -> ssl.SSLContext:
         """Create SSL context for TLS encryption"""
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        
-        # For self-signed certificates, disable hostname verification
-        context.check_hostname = False
+        context.check_hostname = False  # self-signed
         context.verify_mode = ssl.CERT_NONE
         
-        # Security configurations
         context.minimum_version = ssl.TLSVersion.TLSv1_2
-        context.set_ciphers('ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!MD5:!DSS')
+        context.set_ciphers("ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM")
         
         return context
     
     def send_message(self, message: dict):
-        """Send JSON message to server"""
         try:
             data = json.dumps(message).encode('utf-8')
             self.socket.sendall(len(data).to_bytes(4, byteorder='big') + data)
-        except Exception as e:
-            print(f"\n[!] Error sending message: {e}")
+        except:
             self.disconnect()
     
-    def receive_message(self) -> Optional[dict]:
-        """Receive JSON message from server"""
+    def receive_message(self):
+        """Receive message from server"""
         try:
-            # Read message length
             length_bytes = self.socket.recv(4)
             if not length_bytes:
                 return None
             
-            message_length = int.from_bytes(length_bytes, byteorder='big')
-            
-            # Read full message
+            message_len = int.from_bytes(length_bytes, 'big')
             data = b''
-            while len(data) < message_length:
-                chunk = self.socket.recv(min(4096, message_length - len(data)))
+            while len(data) < message_len:
+                chunk = self.socket.recv(message_len - len(data))
                 if not chunk:
                     return None
                 data += chunk
             
             return json.loads(data.decode('utf-8'))
-        except Exception as e:
-            print(f"\n[!] Error receiving message: {e}")
+        
+        except:
             return None
     
     def receive_handler(self):
-        """Handle incoming messages from server"""
         while self.running:
-            try:
-                message = self.receive_message()
-                if not message:
-                    break
-                
-                self.process_message(message)
-            except Exception as e:
-                if self.running:
-                    print(f"\n[!] Connection error: {e}")
+            msg = self.receive_message()
+            if not msg:
                 break
+            self.process_message(msg)
         
         if self.running:
             print("\n[!] Disconnected from server")
-            self.disconnect()
+        self.disconnect()
     
-    def process_message(self, message: dict):
-        """Process different message types from server"""
-        msg_type = message.get('type')
-        
-        if msg_type == 'auth_request':
-            # Server requesting authentication
-            pass  # Handled in connect method
-        
-        elif msg_type == 'auth_success':
-            self.username = message.get('username')
-            self.current_room = message.get('room', 'general')
+    def process_message(self, msg: dict):
+        msg_type = msg.get('type')
+
+        if msg_type == 'auth_success':
+            self.username = msg["username"]
+            self.current_room = msg["room"]
             print(f"\n[✓] Connected as '{self.username}' in room '{self.current_room}'")
             self.connected = True
             self.show_help()
-        
-        elif msg_type == 'auth_error':
-            print(f"\n[!] Authentication error: {message.get('message')}")
-            self.disconnect()
-        
+
         elif msg_type == 'message':
-            # Regular chat message
-            username = message.get('username')
-            content = message.get('content')
-            timestamp = message.get('timestamp')
-            print(f"\n[{timestamp}] {username}: {content}")
+            # Do NOT show your own message (server excludes you)
+            print(f"\n[{msg['timestamp']}] {msg['username']}: {msg['content']}")
             self.show_prompt()
-        
+
+        elif msg_type == 'system':
+            print(f"\n[*] {msg['message']}")
+            self.show_prompt()
+
+        elif msg_type == 'room_list':
+            print("\n[*] Available rooms:", ', '.join(msg['rooms']))
+            self.show_prompt()
+
+        elif msg_type == 'user_list':
+            print(f"\n[*] Users in {msg['room']}: {', '.join(msg['users'])}")
+            self.show_prompt()
+
         elif msg_type == 'private_message':
-            # Private message received
-            from_user = message.get('from')
-            content = message.get('content')
-            timestamp = message.get('timestamp')
-            print(f"\n[{timestamp}] [PM from {from_user}]: {content}")
+            print(f"\n[{msg['timestamp']}] [PM from {msg['from']}]: {msg['content']}")
             self.show_prompt()
         
         elif msg_type == 'private_sent':
-            # Private message sent confirmation
-            to_user = message.get('to')
-            content = message.get('content')
-            print(f"\n[PM to {to_user}]: {content}")
-            self.show_prompt()
-        
-        elif msg_type == 'system':
-            # System message
-            print(f"\n[*] {message.get('message')}")
-            self.show_prompt()
-        
-        elif msg_type == 'room_changed':
-            self.current_room = message.get('room')
-            print(f"\n[✓] Joined room: {self.current_room}")
-            self.show_prompt()
-        
-        elif msg_type == 'room_list':
-            rooms = message.get('rooms', [])
-            print(f"\n[*] Available rooms: {', '.join(rooms)}")
-            self.show_prompt()
-        
-        elif msg_type == 'user_list':
-            room = message.get('room')
-            users = message.get('users', [])
-            print(f"\n[*] Users in {room}: {', '.join(users)}")
-            self.show_prompt()
-        
-        elif msg_type == 'error':
-            print(f"\n[!] Error: {message.get('message')}")
+            print(f"\n[*] PM sent to {msg['to']}")
             self.show_prompt()
     
     def show_prompt(self):
-        """Show input prompt"""
         if self.connected:
-            print(f"[{self.current_room}] > ", end='', flush=True)
+            sys.stdout.write(f"[{self.current_room}] > ")
+            sys.stdout.flush()
     
     def show_help(self):
-        """Display available commands"""
         print("\n" + "="*60)
         print("SECURE CHAT CLIENT - Commands")
         print("="*60)
@@ -170,178 +122,126 @@ class SecureChatClient:
         print("/pm <user> <msg>    - Send private message")
         print("/quit               - Disconnect and exit")
         print("="*60)
-        print()
         self.show_prompt()
     
-    def handle_command(self, command: str) -> bool:
-        """Handle client commands"""
-        parts = command.split(maxsplit=2)
-        cmd = parts[0].lower()
-        
-        if cmd == '/quit':
+    def handle_command(self, cmd: str):
+        parts = cmd.split(maxsplit=2)
+        if parts[0] == "/quit":
             return False
         
-        elif cmd == '/help':
-            self.show_help()
-        
-        elif cmd == '/rooms':
-            # Request room list (server will send it)
-            print("[*] Requesting room list...")
-        
-        elif cmd == '/create':
-            if len(parts) < 2:
-                print("[!] Usage: /create <room_name>")
-            else:
-                room_name = parts[1]
-                self.send_message({
-                    'type': 'create_room',
-                    'room_name': room_name
-                })
-        
-        elif cmd == '/join':
-            if len(parts) < 2:
-                print("[!] Usage: /join <room_name>")
-            else:
-                room_name = parts[1]
-                self.send_message({
-                    'type': 'join_room',
-                    'room_name': room_name
-                })
-        
-        elif cmd == '/users':
+        elif parts[0] == "/pm" and len(parts) == 3:
             self.send_message({
-                'type': 'list_users'
+                'type': 'private_message',
+                'target': parts[1],
+                'content': parts[2]
             })
         
-        elif cmd == '/pm':
-            if len(parts) < 3:
-                print("[!] Usage: /pm <username> <message>")
-            else:
-                target = parts[1]
-                message = parts[2]
-                self.send_message({
-                    'type': 'private_message',
-                    'target': target,
-                    'content': message
-                })
+        elif parts[0] == "/users":
+            self.send_message({'type': 'list_users'})
+        
+        elif parts[0] == "/join" and len(parts) == 2:
+            self.send_message({'type': 'join_room', 'room_name': parts[1]})
+        
+        elif parts[0] == "/create" and len(parts) == 2:
+            self.send_message({'type': 'create_room', 'room_name': parts[1]})
+        
+        elif parts[0] == "/rooms":
+            self.send_message({'type': 'list_rooms'})
+
+        elif parts[0] == "/help":
+            self.show_help()
         
         else:
-            print(f"[!] Unknown command: {cmd}")
-            print("[*] Type /help for available commands")
+            print("[!] Unknown command")
+            print("[*] Use /help")
+            self.show_prompt()
         
         return True
     
     def connect(self, username: str) -> bool:
-        """Connect to the server with TLS encryption"""
         try:
-            # Create SSL context
-            ssl_context = self.create_ssl_context()
-            
-            # Create socket and wrap with TLS
-            raw_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket = ssl_context.wrap_socket(raw_socket, server_hostname=self.host)
-            
-            # Connect to server
+            sslctx = self.create_ssl_context()
+            raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket = sslctx.wrap_socket(raw, server_hostname=self.host)
+
             print(f"[*] Connecting to {self.host}:{self.port}...")
             self.socket.connect((self.host, self.port))
-            print(f"[✓] TLS connection established")
-            print(f"[✓] Cipher: {self.socket.cipher()[0]}")
-            print(f"[✓] TLS Version: {self.socket.version()}")
-            
-            self.running = True
-            
-            # Wait for auth request
-            auth_request = self.receive_message()
-            if not auth_request or auth_request.get('type') != 'auth_request':
-                print("[!] Invalid server response")
+            print("[✓] TLS connection established")
+
+            # Wait for server auth_request
+            auth_req = self.receive_message()
+            if not auth_req or auth_req.get("type") != "auth_request":
+                print("[!] Invalid server handshake")
                 return False
-            
-            # Send authentication
+
+            # Send our username
             self.send_message({
-                'type': 'auth',
-                'username': username
+                "type": "auth",
+                "username": username
             })
-            
-            # Start receive thread
-            receive_thread = threading.Thread(target=self.receive_handler, daemon=True)
-            receive_thread.start()
-            
-            # Wait for authentication response
+
+            # Start receiving thread AFTER sending auth
+            self.running = True
+            recv_thread = threading.Thread(target=self.receive_handler, daemon=True)
+            recv_thread.start()
+
+            # Wait for server to accept username
             import time
-            time.sleep(0.5)
-            
-            return self.connected
-            
+            for _ in range(20):   # up to 2 seconds
+                if self.connected:
+                    return True
+                time.sleep(0.1)
+
+            print("[!] Authentication timeout")
+            return False
+
         except Exception as e:
             print(f"[!] Connection failed: {e}")
             return False
+
     
     def disconnect(self):
-        """Disconnect from server"""
         self.running = False
         self.connected = False
-        if self.socket:
-            try:
+
+        try:
+            if self.socket:
                 self.socket.close()
-            except:
-                pass
+        except:
+            pass
     
     def run(self):
-        """Main client loop"""
         try:
             while self.running and self.connected:
                 self.show_prompt()
-                user_input = input().strip()
-                
-                if not user_input:
+                text = input().strip()
+                if not text:
                     continue
-                
-                if user_input.startswith('/'):
-                    if not self.handle_command(user_input):
+
+                if text.startswith("/"):
+                    if not self.handle_command(text):
                         break
                 else:
-                    # Send regular message
-                    self.send_message({
-                        'type': 'message',
-                        'content': user_input
-                    })
+                    # Send message to server but don't echo locally
+                    self.send_message({'type': 'message', 'content': text})
         
-        except KeyboardInterrupt:
-            print("\n[!] Interrupted by user")
-        except EOFError:
-            print("\n[!] Input stream closed")
-        except Exception as e:
-            print(f"\n[!] Error: {e}")
         finally:
             self.disconnect()
-            print("\n[✓] Disconnected")
+            print("[✓] Disconnected")
 
 def main():
-    """Main entry point"""
     print("="*60)
     print("SECURE CHAT CLIENT - TLS Encrypted")
     print("="*60)
-    
-    # Get connection details
-    host = input("Server address [localhost]: ").strip() or 'localhost'
-    port_input = input("Server port [9999]: ").strip()
-    port = int(port_input) if port_input else 9999
-    
-    # Get username
-    while True:
-        username = input("Enter username (3-20 chars, alphanumeric): ").strip()
-        if 3 <= len(username) <= 20:
-            break
-        print("[!] Username must be 3-20 characters")
-    
-    # Create and connect client
+
+    host = input("Server address [localhost]: ").strip() or "localhost"
+    port = int(input("Server port [9999]: ").strip() or "9999")
+
+    username = input("Enter username: ").strip()
+
     client = SecureChatClient(host, port)
-    
     if client.connect(username):
         client.run()
-    else:
-        print("[!] Failed to connect to server")
-        sys.exit(1)
 
 if __name__ == "__main__":
     main()
