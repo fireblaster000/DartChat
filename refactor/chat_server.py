@@ -64,6 +64,14 @@ class SecureChatServer:
             return False, "Username already taken"
         return True, "Valid"
     
+    def get_user_room(self, username: str) -> Optional[str]:
+        """Get the room a user is currently in"""
+        with self.clients_lock:
+            for client, info in self.clients.items():
+                if info['username'] == username:
+                    return info['room']
+        return None
+    
     def create_ssl_context(self) -> ssl.SSLContext:
         """Create and configure SSL context for TLS encryption"""
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -294,7 +302,7 @@ class SecureChatServer:
                 })
                 return
             
-            # Filter out sender from targets (double-check in case client validation fails)
+            # Filter out sender from targets
             targets = [t for t in targets if t != username]
             
             if not targets:
@@ -313,8 +321,30 @@ class SecureChatServer:
                 })
                 return
             
-            # Generate unique file ID for each recipient
+            # Check if all targets are in the same room as sender
+            not_in_room = []
+            valid_targets = []
+            
             for target in targets:
+                target_room = self.get_user_room(target)
+                if target_room != current_room:
+                    not_in_room.append(f"{target} (in #{target_room})")
+                else:
+                    valid_targets.append(target)
+            
+            # Notify sender about users not in the same room
+            if not_in_room:
+                self.send_message(client, {
+                    'type': 'system',
+                    'message': f"Cannot send file - user(s) not in #{current_room}: {', '.join(not_in_room)}"
+                })
+            
+            # If no valid targets remain, return
+            if not valid_targets:
+                return
+            
+            # Generate unique file ID for each valid recipient
+            for target in valid_targets:
                 file_id = str(uuid.uuid4())[:8]
                 
                 # Store file transfer info
@@ -338,10 +368,18 @@ class SecureChatServer:
                     'broadcast': False
                 })
             
-            if len(targets) == 1:
-                print(f"[📁] File transfer: {username} -> {targets[0]} ({filename}, {filesize} bytes)")
+            if len(valid_targets) == 1:
+                print(f"[📁] File transfer: {username} -> {valid_targets[0]} ({filename}, {filesize} bytes)")
+                self.send_message(client, {
+                    'type': 'system',
+                    'message': f"Sending {filename} to {valid_targets[0]}..."
+                })
             else:
-                print(f"[📁] File transfer: {username} -> {len(targets)} users ({filename}, {filesize} bytes)")
+                print(f"[📁] File transfer: {username} -> {len(valid_targets)} users ({filename}, {filesize} bytes)")
+                self.send_message(client, {
+                    'type': 'system',
+                    'message': f"Sending {filename} to {len(valid_targets)} users..."
+                })
         
         elif msg_type == 'file_broadcast':
             filename = message.get('filename')
@@ -391,7 +429,7 @@ class SecureChatServer:
             
             self.send_message(client, {
                 'type': 'system',
-                'message': f"Broadcasting {filename} to {len(room_members)} users in {current_room}"
+                'message': f"Broadcasting {filename} to {len(room_members)} users in #{current_room}"
             })
         
         elif msg_type == 'file_accept':
