@@ -1,0 +1,4 @@
+#add the files folder in refactor to gitignore
+/refactor/files/*
+/refactor/downloads/*
+/refactor/certs/*

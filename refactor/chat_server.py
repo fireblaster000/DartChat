@@ -1,6 +1,6 @@
 """
 Secure Chat Server with TLS Encryption
-Implements multi-client support, chat rooms, and secure communication
+Implements multi-client support, chat rooms, file transfer, and secure communication
 """
 import socket
 import ssl
@@ -8,8 +8,10 @@ import threading
 import json
 import datetime
 import re
+import uuid
 from typing import Dict, Set, Optional
 import sys
+import signal
 
 class ChatRoom:
     """Represents a chat room with members"""
@@ -45,6 +47,10 @@ class SecureChatServer:
         self.rooms: Dict[str, ChatRoom] = {'general': ChatRoom('general')}
         self.username_map: Dict[str, socket.socket] = {}
         self.running = False
+        self.server_socket = None
+        
+        # File transfer tracking
+        self.pending_files: Dict[str, dict] = {}
         
     def validate_username(self, username: str) -> tuple[bool, str]:
         """Validate username according to security rules"""
@@ -100,7 +106,7 @@ class SecureChatServer:
             data = b''
             
             while len(data) < message_length:
-                chunk = client.recv(min(4096, message_length - len(data)))
+                chunk = client.recv(min(8192, message_length - len(data)))
                 if not chunk:
                     return None
                 data += chunk
@@ -274,6 +280,180 @@ class SecureChatServer:
                     'type': 'system',
                     'message': f"Room '{room_name}' does not exist"
                 })
+        
+        elif msg_type == 'file_send':
+            targets = message.get('targets', [])
+            filename = message.get('filename')
+            filesize = message.get('filesize')
+            filedata = message.get('data')
+            
+            if not targets:
+                self.send_message(client, {
+                    'type': 'system',
+                    'message': 'No target users specified'
+                })
+                return
+            
+            # Filter out sender from targets (double-check in case client validation fails)
+            targets = [t for t in targets if t != username]
+            
+            if not targets:
+                self.send_message(client, {
+                    'type': 'system',
+                    'message': 'Cannot send file to yourself'
+                })
+                return
+            
+            # Check all targets exist
+            invalid_users = [t for t in targets if t not in self.username_map]
+            if invalid_users:
+                self.send_message(client, {
+                    'type': 'system',
+                    'message': f"User(s) not found: {', '.join(invalid_users)}"
+                })
+                return
+            
+            # Generate unique file ID for each recipient
+            for target in targets:
+                file_id = str(uuid.uuid4())[:8]
+                
+                # Store file transfer info
+                self.pending_files[file_id] = {
+                    'from': username,
+                    'to': target,
+                    'filename': filename,
+                    'filesize': filesize,
+                    'data': filedata,
+                    'broadcast': False
+                }
+                
+                # Send file offer to target
+                target_client = self.username_map[target]
+                self.send_message(target_client, {
+                    'type': 'file_offer',
+                    'from': username,
+                    'filename': filename,
+                    'filesize': filesize,
+                    'file_id': file_id,
+                    'broadcast': False
+                })
+            
+            if len(targets) == 1:
+                print(f"[📁] File transfer: {username} -> {targets[0]} ({filename}, {filesize} bytes)")
+            else:
+                print(f"[📁] File transfer: {username} -> {len(targets)} users ({filename}, {filesize} bytes)")
+        
+        elif msg_type == 'file_broadcast':
+            filename = message.get('filename')
+            filesize = message.get('filesize')
+            filedata = message.get('data')
+            
+            # Get all users in current room except sender
+            with self.clients_lock:
+                room_members = [
+                    (info['username'], client_sock) 
+                    for client_sock, info in self.clients.items() 
+                    if info['room'] == current_room and info['username'] != username
+                ]
+            
+            if not room_members:
+                self.send_message(client, {
+                    'type': 'system',
+                    'message': 'No other users in room to broadcast to'
+                })
+                return
+            
+            # Generate unique file ID for each recipient
+            for target_username, target_client in room_members:
+                file_id = str(uuid.uuid4())[:8]
+                
+                # Store file transfer info
+                self.pending_files[file_id] = {
+                    'from': username,
+                    'to': target_username,
+                    'filename': filename,
+                    'filesize': filesize,
+                    'data': filedata,
+                    'broadcast': True
+                }
+                
+                # Send file offer to target
+                self.send_message(target_client, {
+                    'type': 'file_offer',
+                    'from': username,
+                    'filename': filename,
+                    'filesize': filesize,
+                    'file_id': file_id,
+                    'broadcast': True
+                })
+            
+            print(f"[📁] File broadcast: {username} -> {current_room} ({filename}, {filesize} bytes, {len(room_members)} recipients)")
+            
+            self.send_message(client, {
+                'type': 'system',
+                'message': f"Broadcasting {filename} to {len(room_members)} users in {current_room}"
+            })
+        
+        elif msg_type == 'file_accept':
+            file_id = message.get('file_id')
+            
+            if file_id not in self.pending_files:
+                self.send_message(client, {
+                    'type': 'system',
+                    'message': 'File offer expired or not found'
+                })
+                return
+            
+            file_info = self.pending_files[file_id]
+            
+            # Verify this user is the recipient
+            if file_info['to'] != username:
+                return
+            
+            # Send file to recipient
+            self.send_message(client, {
+                'type': 'file_transfer',
+                'from': file_info['from'],
+                'filename': file_info['filename'],
+                'data': file_info['data']
+            })
+            
+            # Notify sender
+            if file_info['from'] in self.username_map:
+                sender_client = self.username_map[file_info['from']]
+                self.send_message(sender_client, {
+                    'type': 'system',
+                    'message': f"{username} accepted your file: {file_info['filename']}"
+                })
+            
+            # Clean up
+            del self.pending_files[file_id]
+            print(f"[✓] File transfer completed: {file_info['filename']}")
+        
+        elif msg_type == 'file_reject':
+            file_id = message.get('file_id')
+            
+            if file_id not in self.pending_files:
+                return
+            
+            file_info = self.pending_files[file_id]
+            
+            # Verify this user is the recipient
+            if file_info['to'] != username:
+                return
+            
+            # Notify sender
+            if file_info['from'] in self.username_map:
+                sender_client = self.username_map[file_info['from']]
+                self.send_message(sender_client, {
+                    'type': 'file_rejected',
+                    'target': username,
+                    'filename': file_info['filename']
+                })
+            
+            # Clean up
+            del self.pending_files[file_id]
+            print(f"[!] File transfer rejected: {file_info['filename']}")
 
     def disconnect_client(self, client: socket.socket, username: Optional[str]):
         """Cleanup disconnect"""
@@ -292,7 +472,6 @@ class SecureChatServer:
         room = None
         with self.clients_lock:
             if client in self.clients:
-                print(f"    Client info: {self.clients[client]}")
                 room = self.clients[client]['room']
                 del self.clients[client]
 
@@ -301,7 +480,6 @@ class SecureChatServer:
 
         # Remove from room and broadcast OUTSIDE the lock
         if room and room in self.rooms:
-            print(f"    Removing from room: {room}")
             self.rooms[room].remove_member(username)
 
             # Broadcast disconnect message
@@ -316,44 +494,88 @@ class SecureChatServer:
             client.close()
         except:
             pass
+    
+    def shutdown(self):
+        """Graceful shutdown"""
+        print("\n[*] Shutting down server...")
+        self.running = False
+        
+        # Close all client connections
+        with self.clients_lock:
+            for client in list(self.clients.keys()):
+                try:
+                    self.send_message(client, {
+                        'type': 'system',
+                        'message': 'Server is shutting down'
+                    })
+                    client.close()
+                except:
+                    pass
+            self.clients.clear()
+            self.username_map.clear()
+        
+        # Close server socket
+        if self.server_socket:
+            try:
+                self.server_socket.close()
+            except:
+                pass
+        
+        print("[✓] Server shut down complete")
 
     def start(self):
         """Start server"""
         self.running = True
         ssl_context = self.create_ssl_context()
 
-        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server_socket.bind((self.host, self.port))
-        server_socket.listen(5)
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.server_socket.bind((self.host, self.port))
+        self.server_socket.listen(5)
 
         print(f"[✓] Secure Chat Server started on {self.host}:{self.port}")
         print(f"[✓] TLS encryption enabled")
-        print(f"[✓] Waiting for connections...\n")
+        print(f"[✓] Waiting for connections...")
+        print(f"[*] Press Ctrl+C to stop the server\n")
 
         try:
             while self.running:
-                client_socket, address = server_socket.accept()
-                secure_client = ssl_context.wrap_socket(client_socket, server_side=True)
+                try:
+                    client_socket, address = self.server_socket.accept()
+                    if not self.running:
+                        break
+                    secure_client = ssl_context.wrap_socket(client_socket, server_side=True)
 
-                threading.Thread(
-                    target=self.handle_client,
-                    args=(secure_client, address),
-                    daemon=True
-                ).start()
+                    threading.Thread(
+                        target=self.handle_client,
+                        args=(secure_client, address),
+                        daemon=True
+                    ).start()
+                except OSError:
+                    # Socket closed during shutdown
+                    break
 
         except KeyboardInterrupt:
-            pass
+            print("\n[*] Keyboard interrupt received")
 
         finally:
-            self.running = False
-            server_socket.close()
-            print("\n[✓] Server shut down")
+            self.shutdown()
+
+def signal_handler(signum, frame):
+    """Handle signals for graceful shutdown"""
+    print("\n[*] Signal received, shutting down...")
+    sys.exit(0)
 
 if __name__ == "__main__":
+    # Set up signal handlers
+    signal.signal(signal.SIGINT, signal_handler)
+    if hasattr(signal, 'SIGTERM'):
+        signal.signal(signal.SIGTERM, signal_handler)
+    
     server = SecureChatServer()
     try:
         server.start()
     except Exception as e:
         print(f"[!] Server error: {e}")
+        server.shutdown()
         sys.exit(1)
