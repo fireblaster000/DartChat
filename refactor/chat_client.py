@@ -89,8 +89,15 @@ class SecureChatClient:
             print(f"\n[*] {msg['message']}")
             self.show_prompt()
 
+        elif msg_type == 'room_changed':
+            self.current_room = message.get('room')
+            room_message = message.get('message')
+            print(f"\n[✓] {room_message}")
+            self.show_prompt()
+
         elif msg_type == 'room_list':
-            print("\n[*] Available rooms:", ', '.join(msg['rooms']))
+            rooms = message.get('rooms', [])
+            print(f"\n[*] Available rooms: {', '.join(rooms)}")
             self.show_prompt()
 
         elif msg_type == 'user_list':
