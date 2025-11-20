@@ -1,6 +1,6 @@
 """
-Secure Chat Server with TLS Encryption
-Implements multi-client support, chat rooms, file transfer, and secure communication
+Secure Chat Server with TLS Encryption and Voice Call Support
+Implements multi-client support, chat rooms, file transfer, voice calls, and secure communication
 """
 import socket
 import ssl
@@ -37,7 +37,7 @@ class ChatRoom:
             self.message_history.pop(0)
 
 class SecureChatServer:
-    """TLS-enabled multi-client chat server"""
+    """TLS-enabled multi-client chat server with voice call support"""
     
     def __init__(self, host: str = '0.0.0.0', port: int = 9999):
         self.host = host
@@ -52,7 +52,10 @@ class SecureChatServer:
         # File transfer tracking
         self.pending_files: Dict[str, dict] = {}
         
-    def validate_username(self, username: str) -> tuple[bool, str]:
+        # Voice call tracking
+        self.active_calls: Dict[str, dict] = {}  # username -> call info
+        
+    def validate_username(self, username: str):
         """Validate username according to security rules"""
         if not username or len(username) < 3:
             return False, "Username must be at least 3 characters"
@@ -72,15 +75,20 @@ class SecureChatServer:
                     return info['room']
         return None
     
+    def get_user_address(self, username: str) -> Optional[tuple]:
+        """Get the IP address of a user"""
+        with self.clients_lock:
+            for client, info in self.clients.items():
+                if info['username'] == username:
+                    return info['address']
+        return None
+    
     def create_ssl_context(self) -> ssl.SSLContext:
         """Create and configure SSL context for TLS encryption"""
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain('certs/server.crt', 'certs/server.key')
-
-        # HTTPS-grade security but avoid deprecated flags
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.set_ciphers("ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM")
-
         return context
     
     def broadcast_message(self, message: dict, room: str, exclude_client: Optional[socket.socket] = None):
@@ -91,7 +99,6 @@ class SecureChatServer:
                 if info['room'] == room and client != exclude_client:
                     clients_to_send.append(client)
 
-        # Send outside the lock to avoid deadlock
         for client in clients_to_send:
             try:
                 self.send_message(client, message)
@@ -103,7 +110,7 @@ class SecureChatServer:
         data = json.dumps(message).encode('utf-8')
         client.sendall(len(data).to_bytes(4, byteorder='big') + data)
     
-    def receive_message(self, client: socket.socket) -> Optional[dict]:
+    def receive_message(self, client: socket.socket):
         """Receive JSON message from client"""
         try:
             length_bytes = client.recv(4)
@@ -163,7 +170,6 @@ class SecureChatServer:
             
             print(f"[+] {username} connected from {address[0]}:{address[1]}")
             
-            # Notify others that this user joined
             self.broadcast_message({
                 'type': 'system',
                 'message': f"{username} joined the chat"
@@ -261,7 +267,6 @@ class SecureChatServer:
         elif msg_type == 'join_room':
             room_name = message.get('room_name', '').strip()
             if room_name in self.rooms:
-                # Leave current room
                 old_room = current_room
                 self.rooms[old_room].remove_member(username)
                 self.broadcast_message({
@@ -269,7 +274,6 @@ class SecureChatServer:
                     'message': f"{username} left the room"
                 }, old_room)
 
-                # Join new room
                 with self.clients_lock:
                     self.clients[client]['room'] = room_name
 
@@ -302,7 +306,6 @@ class SecureChatServer:
                 })
                 return
             
-            # Filter out sender from targets
             targets = [t for t in targets if t != username]
             
             if not targets:
@@ -312,7 +315,6 @@ class SecureChatServer:
                 })
                 return
             
-            # Check all targets exist
             invalid_users = [t for t in targets if t not in self.username_map]
             if invalid_users:
                 self.send_message(client, {
@@ -321,7 +323,6 @@ class SecureChatServer:
                 })
                 return
             
-            # Check if all targets are in the same room as sender
             not_in_room = []
             valid_targets = []
             
@@ -332,22 +333,18 @@ class SecureChatServer:
                 else:
                     valid_targets.append(target)
             
-            # Notify sender about users not in the same room
             if not_in_room:
                 self.send_message(client, {
                     'type': 'system',
                     'message': f"Cannot send file - user(s) not in #{current_room}: {', '.join(not_in_room)}"
                 })
             
-            # If no valid targets remain, return
             if not valid_targets:
                 return
             
-            # Generate unique file ID for each valid recipient
             for target in valid_targets:
                 file_id = str(uuid.uuid4())[:8]
                 
-                # Store file transfer info
                 self.pending_files[file_id] = {
                     'from': username,
                     'to': target,
@@ -357,7 +354,6 @@ class SecureChatServer:
                     'broadcast': False
                 }
                 
-                # Send file offer to target
                 target_client = self.username_map[target]
                 self.send_message(target_client, {
                     'type': 'file_offer',
@@ -386,7 +382,6 @@ class SecureChatServer:
             filesize = message.get('filesize')
             filedata = message.get('data')
             
-            # Get all users in current room except sender
             with self.clients_lock:
                 room_members = [
                     (info['username'], client_sock) 
@@ -401,11 +396,9 @@ class SecureChatServer:
                 })
                 return
             
-            # Generate unique file ID for each recipient
             for target_username, target_client in room_members:
                 file_id = str(uuid.uuid4())[:8]
                 
-                # Store file transfer info
                 self.pending_files[file_id] = {
                     'from': username,
                     'to': target_username,
@@ -415,7 +408,6 @@ class SecureChatServer:
                     'broadcast': True
                 }
                 
-                # Send file offer to target
                 self.send_message(target_client, {
                     'type': 'file_offer',
                     'from': username,
@@ -444,11 +436,9 @@ class SecureChatServer:
             
             file_info = self.pending_files[file_id]
             
-            # Verify this user is the recipient
             if file_info['to'] != username:
                 return
             
-            # Send file to recipient
             self.send_message(client, {
                 'type': 'file_transfer',
                 'from': file_info['from'],
@@ -456,7 +446,6 @@ class SecureChatServer:
                 'data': file_info['data']
             })
             
-            # Notify sender
             if file_info['from'] in self.username_map:
                 sender_client = self.username_map[file_info['from']]
                 self.send_message(sender_client, {
@@ -464,7 +453,6 @@ class SecureChatServer:
                     'message': f"{username} accepted your file: {file_info['filename']}"
                 })
             
-            # Clean up
             del self.pending_files[file_id]
             print(f"[✓] File transfer completed: {file_info['filename']}")
         
@@ -476,11 +464,9 @@ class SecureChatServer:
             
             file_info = self.pending_files[file_id]
             
-            # Verify this user is the recipient
             if file_info['to'] != username:
                 return
             
-            # Notify sender
             if file_info['from'] in self.username_map:
                 sender_client = self.username_map[file_info['from']]
                 self.send_message(sender_client, {
@@ -489,9 +475,151 @@ class SecureChatServer:
                     'filename': file_info['filename']
                 })
             
-            # Clean up
             del self.pending_files[file_id]
             print(f"[!] File transfer rejected: {file_info['filename']}")
+        
+        elif msg_type == 'call_request':
+            target = message.get('target')
+            caller_voice_port = message.get('voice_port')
+            
+            # Validate target exists
+            if target not in self.username_map:
+                self.send_message(client, {
+                    'type': 'error',
+                    'message': f"User '{target}' not found"
+                })
+                return
+            
+            # Check if target is in same room
+            target_room = self.get_user_room(target)
+            if target_room != current_room:
+                self.send_message(client, {
+                    'type': 'error',
+                    'message': f"Cannot call {target} - they are in room #{target_room}"
+                })
+                return
+            
+            # Check if caller is already in a call
+            if username in self.active_calls:
+                self.send_message(client, {
+                    'type': 'error',
+                    'message': 'You are already in a call'
+                })
+                return
+            
+            # Check if target is already in a call
+            if target in self.active_calls:
+                self.send_message(client, {
+                    'type': 'error',
+                    'message': f'{target} is already in a call'
+                })
+                return
+            
+            # Get caller's IP address
+            caller_address = self.get_user_address(username)
+            if not caller_address:
+                self.send_message(client, {
+                    'type': 'error',
+                    'message': 'Could not determine your IP address'
+                })
+                return
+            
+            # Store pending call
+            self.active_calls[username] = {
+                'peer': target,
+                'status': 'calling',
+                'voice_port': caller_voice_port,
+                'ip': caller_address[0]
+            }
+            
+            # Forward call request to target
+            target_client = self.username_map[target]
+            self.send_message(target_client, {
+                'type': 'call_request',
+                'from': username,
+                'peer_ip': caller_address[0],
+                'peer_port': caller_voice_port
+            })
+            
+            print(f"[📞] Call request: {username} -> {target}")
+        
+        elif msg_type == 'call_accept':
+            target = message.get('target')
+            receiver_voice_port = message.get('voice_port')
+            
+            # Validate the call exists
+            if target not in self.active_calls:
+                self.send_message(client, {
+                    'type': 'error',
+                    'message': 'No pending call from this user'
+                })
+                return
+            
+            call_info = self.active_calls[target]
+            if call_info['peer'] != username:
+                return
+            
+            # Get receiver's IP address
+            receiver_address = self.get_user_address(username)
+            if not receiver_address:
+                return
+            
+            # Update call status
+            self.active_calls[username] = {
+                'peer': target,
+                'status': 'active',
+                'voice_port': receiver_voice_port,
+                'ip': receiver_address[0]
+            }
+            self.active_calls[target]['status'] = 'active'
+            
+            # Notify caller that call was accepted
+            if target in self.username_map:
+                caller_client = self.username_map[target]
+                self.send_message(caller_client, {
+                    'type': 'call_accepted',
+                    'from': username,
+                    'peer_ip': receiver_address[0],
+                    'peer_port': receiver_voice_port
+                })
+            
+            print(f"[📞] Call connected: {target} <-> {username}")
+        
+        elif msg_type == 'call_reject':
+            target = message.get('target')
+            
+            # Clean up call
+            if target in self.active_calls:
+                del self.active_calls[target]
+            
+            # Notify caller
+            if target in self.username_map:
+                caller_client = self.username_map[target]
+                self.send_message(caller_client, {
+                    'type': 'call_rejected',
+                    'from': username
+                })
+            
+            print(f"[📞] Call rejected: {target} -> {username}")
+        
+        elif msg_type == 'call_end':
+            target = message.get('target')
+            
+            # Clean up both sides of the call
+            if username in self.active_calls:
+                del self.active_calls[username]
+            if target in self.active_calls:
+                del self.active_calls[target]
+            
+            # Notify peer
+            if target in self.username_map:
+                peer_client = self.username_map[target]
+                self.send_message(peer_client, {
+                    'type': 'call_ended',
+                    'from': username
+                })
+            
+            print(f"[📞] Call ended: {username} <-> {target}")
 
     def disconnect_client(self, client: socket.socket, username: Optional[str]):
         """Cleanup disconnect"""
@@ -506,6 +634,29 @@ class SecureChatServer:
             return
 
         print(f"[!] Cleaning up client {username}")
+        
+        # Clean up any active calls
+        if username in self.active_calls:
+            call_info = self.active_calls[username]
+            peer = call_info['peer']
+            
+            # Notify peer that call ended
+            if peer in self.username_map:
+                peer_client = self.username_map[peer]
+                try:
+                    self.send_message(peer_client, {
+                        'type': 'call_ended',
+                        'from': username
+                    })
+                except:
+                    pass
+            
+            # Clean up call info
+            del self.active_calls[username]
+            if peer in self.active_calls:
+                del self.active_calls[peer]
+            
+            print(f"[📞] Call terminated due to disconnect: {username} <-> {peer}")
 
         room = None
         with self.clients_lock:
@@ -516,11 +667,8 @@ class SecureChatServer:
             if username in self.username_map:
                 del self.username_map[username]
 
-        # Remove from room and broadcast OUTSIDE the lock
         if room and room in self.rooms:
             self.rooms[room].remove_member(username)
-
-            # Broadcast disconnect message
             self.broadcast_message({
                 'type': 'system',
                 'message': f"{username} left the chat"
@@ -538,7 +686,6 @@ class SecureChatServer:
         print("\n[*] Shutting down server...")
         self.running = False
         
-        # Close all client connections
         with self.clients_lock:
             for client in list(self.clients.keys()):
                 try:
@@ -552,7 +699,6 @@ class SecureChatServer:
             self.clients.clear()
             self.username_map.clear()
         
-        # Close server socket
         if self.server_socket:
             try:
                 self.server_socket.close()
@@ -573,6 +719,7 @@ class SecureChatServer:
 
         print(f"[✓] Secure Chat Server started on {self.host}:{self.port}")
         print(f"[✓] TLS encryption enabled")
+        print(f"[✓] Voice calls enabled (UDP)")
         print(f"[✓] Waiting for connections...")
         print(f"[*] Press Ctrl+C to stop the server\n")
 
@@ -590,7 +737,6 @@ class SecureChatServer:
                         daemon=True
                     ).start()
                 except OSError:
-                    # Socket closed during shutdown
                     break
 
         except KeyboardInterrupt:
@@ -605,7 +751,6 @@ def signal_handler(signum, frame):
     sys.exit(0)
 
 if __name__ == "__main__":
-    # Set up signal handlers
     signal.signal(signal.SIGINT, signal_handler)
     if hasattr(signal, 'SIGTERM'):
         signal.signal(signal.SIGTERM, signal_handler)
