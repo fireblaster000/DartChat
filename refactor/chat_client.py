@@ -1,6 +1,6 @@
 """
 Secure Chat Client with TLS Encryption
-Implements TLS connection, message handling, file transfer, and user interface
+Enhanced with voice calls, improved file handling, and complete feature set
 """
 import socket
 import ssl
@@ -9,10 +9,182 @@ import threading
 import sys
 import os
 import base64
+import struct
+import time
 from typing import Optional
+from datetime import datetime
+
+try:
+    import pyaudio
+    VOICE_AVAILABLE = True
+except ImportError:
+    VOICE_AVAILABLE = False
+    print("[!] PyAudio not available - voice calls disabled")
+    print("[*] Install with: pip install pyaudio")
+
+
+class VoiceCall:
+    """Manages a single voice call session"""
+    
+    def __init__(self, peer_ip: str, peer_port: int, local_port: int):
+        if not VOICE_AVAILABLE:
+            raise Exception("PyAudio not available")
+        
+        # Audio configuration
+        self.CHUNK = 1024
+        self.FORMAT = pyaudio.paInt16
+        self.CHANNELS = 1
+        self.RATE = 44100
+        
+        # Network configuration
+        self.peer_ip = peer_ip
+        self.peer_port = peer_port
+        self.local_port = local_port
+        
+        # State
+        self.is_active = False
+        self.is_muted = False
+        
+        # Audio streams
+        self.audio = None
+        self.input_stream = None
+        self.output_stream = None
+        
+        # UDP sockets
+        self.send_socket = None
+        self.recv_socket = None
+        
+        # Threads
+        self.send_thread = None
+        self.recv_thread = None
+        
+    def start(self):
+        """Start the voice call"""
+        if self.is_active:
+            return False
+        
+        try:
+            # Initialize PyAudio
+            self.audio = pyaudio.PyAudio()
+            
+            # Open audio streams
+            self.input_stream = self.audio.open(
+                format=self.FORMAT,
+                channels=self.CHANNELS,
+                rate=self.RATE,
+                input=True,
+                frames_per_buffer=self.CHUNK
+            )
+            
+            self.output_stream = self.audio.open(
+                format=self.FORMAT,
+                channels=self.CHANNELS,
+                rate=self.RATE,
+                output=True,
+                frames_per_buffer=self.CHUNK
+            )
+            
+            # Create UDP sockets
+            self.send_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            
+            self.recv_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.recv_socket.bind(('0.0.0.0', self.local_port))
+            self.recv_socket.settimeout(0.1)
+            
+            self.is_active = True
+            
+            # Start threads
+            self.send_thread = threading.Thread(target=self._send_audio, daemon=True)
+            self.recv_thread = threading.Thread(target=self._receive_audio, daemon=True)
+            
+            self.send_thread.start()
+            self.recv_thread.start()
+            
+            return True
+            
+        except Exception as e:
+            print(f"[!] Error starting call: {e}")
+            self.stop()
+            return False
+    
+    def _send_audio(self):
+        """Capture audio and send via UDP"""
+        sequence_number = 0
+        
+        while self.is_active:
+            try:
+                if not self.is_muted:
+                    data = self.input_stream.read(self.CHUNK, exception_on_overflow=False)
+                    packet = struct.pack('I', sequence_number) + data
+                    self.send_socket.sendto(packet, (self.peer_ip, self.peer_port))
+                    sequence_number += 1
+                else:
+                    silence = b'\x00' * (self.CHUNK * 2)
+                    packet = struct.pack('I', sequence_number) + silence
+                    self.send_socket.sendto(packet, (self.peer_ip, self.peer_port))
+                    sequence_number += 1
+                    time.sleep(0.02)
+                    
+            except Exception as e:
+                if self.is_active:
+                    print(f"[!] Send error: {e}")
+                break
+    
+    def _receive_audio(self):
+        """Receive audio via UDP and play"""
+        while self.is_active:
+            try:
+                packet, addr = self.recv_socket.recvfrom(4096)
+                
+                if len(packet) > 4:
+                    audio_data = packet[4:]
+                    self.output_stream.write(audio_data)
+                    
+            except socket.timeout:
+                continue
+            except Exception as e:
+                if self.is_active:
+                    print(f"[!] Receive error: {e}")
+                break
+    
+    def toggle_mute(self):
+        """Toggle microphone mute"""
+        self.is_muted = not self.is_muted
+        return self.is_muted
+    
+    def stop(self):
+        """Stop the voice call and cleanup resources"""
+        if not self.is_active:
+            return
+        
+        self.is_active = False
+        
+        # Wait for threads
+        if self.send_thread and self.send_thread.is_alive():
+            self.send_thread.join(timeout=1)
+        if self.recv_thread and self.recv_thread.is_alive():
+            self.recv_thread.join(timeout=1)
+        
+        # Close streams
+        if self.input_stream:
+            self.input_stream.stop_stream()
+            self.input_stream.close()
+        if self.output_stream:
+            self.output_stream.stop_stream()
+            self.output_stream.close()
+        
+        if self.audio:
+            self.audio.terminate()
+        
+        # Close sockets
+        if self.send_socket:
+            self.send_socket.close()
+        if self.recv_socket:
+            self.recv_socket.close()
+
 
 class SecureChatClient:
-    """TLS-enabled chat client"""
+    """TLS-enabled chat client with voice call support"""
     
     def __init__(self, host: str = 'localhost', port: int = 9999):
         self.host = host
@@ -23,7 +195,13 @@ class SecureChatClient:
         self.running = False
         self.connected = False
         self.download_dir = 'downloads'
-        self.received_files = []  # Track received files with metadata
+        self.received_files = []
+        self.pending_file_offers = {}
+        
+        # Voice call variables
+        self.active_call: Optional[VoiceCall] = None
+        self.call_peer: Optional[str] = None
+        self.voice_port = 5000
         
         # Create downloads directory if it doesn't exist
         if not os.path.exists(self.download_dir):
@@ -32,7 +210,7 @@ class SecureChatClient:
     def create_ssl_context(self) -> ssl.SSLContext:
         """Create SSL context for TLS encryption"""
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        context.check_hostname = False  # self-signed
+        context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
         
         context.minimum_version = ssl.TLSVersion.TLSv1_2
@@ -126,6 +304,9 @@ class SecureChatClient:
             file_id = msg['file_id']
             is_broadcast = msg.get('broadcast', False)
             
+            # Store pending offer
+            self.pending_file_offers[file_id] = msg
+            
             if is_broadcast:
                 print(f"\n[📁] Broadcast file from {from_user}: {filename} ({filesize} bytes)")
             else:
@@ -146,7 +327,6 @@ class SecureChatClient:
                 # Add number suffix if file exists
                 base, ext = os.path.splitext(filename)
                 counter = 1
-                original_filepath = filepath
                 while os.path.exists(filepath):
                     filepath = os.path.join(self.download_dir, f"{base}_{counter}{ext}")
                     counter += 1
@@ -155,13 +335,12 @@ class SecureChatClient:
                     f.write(file_bytes)
                 
                 # Track received file
-                import datetime
                 file_info = {
                     'filename': os.path.basename(filepath),
                     'filepath': filepath,
                     'from': from_user,
                     'size': len(file_bytes),
-                    'timestamp': datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 }
                 self.received_files.append(file_info)
                 
@@ -173,12 +352,87 @@ class SecureChatClient:
             self.show_prompt()
         
         elif msg_type == 'file_rejected':
-            print(f"\n[*] {msg['target']} rejected your file transfer")
+            print(f"\n[*] {msg['target']} rejected your file: {msg['filename']}")
+            self.show_prompt()
+        
+        elif msg_type == 'call_request':
+            self.handle_call_request(msg)
+        
+        elif msg_type == 'call_accepted':
+            self.handle_call_accepted(msg)
+        
+        elif msg_type == 'call_rejected':
+            print(f"\n[*] {msg['from']} rejected your call")
+            self.show_prompt()
+        
+        elif msg_type == 'call_ended':
+            self.handle_call_ended(msg)
+        
+        elif msg_type == 'error':
+            print(f"\n[!] Error: {msg.get('message', 'Unknown error')}")
+            self.show_prompt()
+    
+    def handle_call_request(self, msg: dict):
+        """Handle incoming call request"""
+        from_user = msg['from']
+        peer_ip = msg['peer_ip']
+        peer_port = msg['peer_port']
+        
+        print(f"\n[📞] Incoming call from {from_user}")
+        print(f"[*] Type '/answer' to accept or '/decline' to reject")
+        
+        # Store pending call info
+        self.pending_call = {
+            'from': from_user,
+            'peer_ip': peer_ip,
+            'peer_port': peer_port
+        }
+        
+        self.show_prompt()
+    
+    def handle_call_accepted(self, msg: dict):
+        """Handle call acceptance"""
+        from_user = msg['from']
+        peer_ip = msg['peer_ip']
+        peer_port = msg['peer_port']
+        
+        # Start voice call
+        self.call_peer = from_user
+        
+        try:
+            self.active_call = VoiceCall(peer_ip, peer_port, self.voice_port)
+            
+            if self.active_call.start():
+                print(f"\n[📞] {from_user} answered - Call connected!")
+                print(f"[*] Type '/mute' to toggle microphone, '/endcall' to hang up")
+                self.show_prompt()
+            else:
+                print(f"\n[!] Failed to start voice call")
+                self.active_call = None
+                self.call_peer = None
+                self.show_prompt()
+        except Exception as e:
+            print(f"\n[!] Voice call error: {e}")
+            self.active_call = None
+            self.call_peer = None
+            self.show_prompt()
+    
+    def handle_call_ended(self, msg: dict):
+        """Handle call ended by peer"""
+        from_user = msg['from']
+        
+        if self.active_call and self.call_peer == from_user:
+            self.active_call.stop()
+            self.active_call = None
+            self.call_peer = None
+            
+            print(f"\n[📞] {from_user} ended the call")
             self.show_prompt()
     
     def show_prompt(self):
         if self.connected:
-            sys.stdout.write(f"[{self.current_room}] > ")
+            call_indicator = " [IN CALL]" if self.active_call else ""
+            sys.stdout.write(f"[{self.current_room}]{call_indicator} > ")
             sys.stdout.flush()
     
     def show_help(self):
@@ -198,6 +452,12 @@ class SecureChatClient:
         print("/reject <file_id>        - Reject file transfer")
         print("/files                   - List received files")
         print("/view <filename>         - View text file content")
+        if VOICE_AVAILABLE:
+            print("/call <user>             - Start voice call with user")
+            print("/answer                  - Answer incoming call")
+            print("/decline                 - Decline incoming call")
+            print("/mute                    - Toggle microphone mute")
+            print("/endcall                 - End active call")
         print("/quit                    - Disconnect and exit")
         print("="*60)
         self.show_prompt()
@@ -212,7 +472,6 @@ class SecureChatClient:
             return False
         
         elif command == "/pm":
-            # Split args into target and message (maxsplit=1 for target, rest is message)
             pm_parts = args.split(maxsplit=1)
             if len(pm_parts) == 2:
                 self.send_message({
@@ -248,7 +507,6 @@ class SecureChatClient:
             self.show_help()
         
         elif command == "/sendfile":
-            # Split into target and filepath
             file_parts = args.split(maxsplit=1)
             if len(file_parts) == 2:
                 target_user = file_parts[0]
@@ -267,7 +525,6 @@ class SecureChatClient:
                 self.show_prompt()
         
         elif command == "/sendmulti":
-            # Split into users and filepath
             multi_parts = args.split(maxsplit=1)
             if len(multi_parts) == 2:
                 users_str = multi_parts[0]
@@ -311,12 +568,156 @@ class SecureChatClient:
                 print("[!] Usage: /view <filename>")
                 self.show_prompt()
         
+        elif command == "/call":
+            if not VOICE_AVAILABLE:
+                print("[!] Voice calls not available - PyAudio not installed")
+                self.show_prompt()
+            elif args:
+                target = args.strip()
+                self.start_call(target)
+            else:
+                print("[!] Usage: /call <user>")
+                self.show_prompt()
+        
+        elif command == "/answer":
+            if not VOICE_AVAILABLE:
+                print("[!] Voice calls not available - PyAudio not installed")
+                self.show_prompt()
+            elif hasattr(self, 'pending_call'):
+                self.answer_call()
+            else:
+                print("[!] No incoming call")
+                self.show_prompt()
+        
+        elif command == "/decline":
+            if hasattr(self, 'pending_call'):
+                self.decline_call()
+            else:
+                print("[!] No incoming call")
+                self.show_prompt()
+        
+        elif command == "/mute":
+            if not VOICE_AVAILABLE:
+                print("[!] Voice calls not available")
+                self.show_prompt()
+            elif self.active_call:
+                is_muted = self.active_call.toggle_mute()
+                status = "MUTED" if is_muted else "UNMUTED"
+                print(f"[*] Microphone {status}")
+                self.show_prompt()
+            else:
+                print("[!] Not in a call")
+                self.show_prompt()
+        
+        elif command == "/endcall":
+            if self.active_call:
+                self.end_call()
+            else:
+                print("[!] Not in a call")
+                self.show_prompt()
+        
         else:
             print("[!] Unknown command")
             print("[*] Use /help")
             self.show_prompt()
         
         return True
+    
+    def start_call(self, target: str):
+        """Initiate a voice call"""
+        if target == self.username:
+            print("[!] Cannot call yourself")
+            self.show_prompt()
+            return
+        
+        if self.active_call:
+            print("[!] Already in a call")
+            self.show_prompt()
+            return
+        
+        self.send_message({
+            'type': 'call_request',
+            'target': target,
+            'voice_port': self.voice_port
+        })
+        
+        print(f"[*] Calling {target}...")
+        self.show_prompt()
+    
+    def answer_call(self):
+        """Answer incoming call"""
+        if not hasattr(self, 'pending_call'):
+            return
+        
+        call_info = self.pending_call
+        from_user = call_info['from']
+        peer_ip = call_info['peer_ip']
+        peer_port = call_info['peer_port']
+        
+        # Start voice call
+        self.call_peer = from_user
+        
+        try:
+            self.active_call = VoiceCall(peer_ip, peer_port, self.voice_port)
+            
+            if self.active_call.start():
+                self.send_message({
+                    'type': 'call_accept',
+                    'target': from_user,
+                    'voice_port': self.voice_port
+                })
+                
+                print(f"[📞] Call connected with {from_user}")
+                print(f"[*] Type '/mute' to toggle microphone, '/endcall' to hang up")
+                delattr(self, 'pending_call')
+                self.show_prompt()
+            else:
+                print("[!] Failed to start voice call")
+                self.active_call = None
+                self.call_peer = None
+                delattr(self, 'pending_call')
+                self.show_prompt()
+        except Exception as e:
+            print(f"[!] Voice call error: {e}")
+            self.active_call = None
+            self.call_peer = None
+            delattr(self, 'pending_call')
+            self.show_prompt()
+    
+    def decline_call(self):
+        """Decline incoming call"""
+        if not hasattr(self, 'pending_call'):
+            return
+        
+        from_user = self.pending_call['from']
+        
+        self.send_message({
+            'type': 'call_reject',
+            'target': from_user
+        })
+        
+        print(f"[*] Declined call from {from_user}")
+        delattr(self, 'pending_call')
+        self.show_prompt()
+    
+    def end_call(self):
+        """End active voice call"""
+        if not self.active_call:
+            return
+        
+        self.active_call.stop()
+        
+        if self.call_peer:
+            self.send_message({
+                'type': 'call_end',
+                'target': self.call_peer
+            })
+            
+            print(f"\n[📞] Call with {self.call_peer} ended")
+        
+        self.active_call = None
+        self.call_peer = None
+        self.show_prompt()
     
     def send_file(self, target_users: list, filepath: str, broadcast: bool = False):
         """Send file to specific users or broadcast to room"""
@@ -483,6 +884,12 @@ class SecureChatClient:
     def disconnect(self):
         self.running = False
         self.connected = False
+        
+        # End any active call
+        if self.active_call:
+            self.active_call.stop()
+            self.active_call = None
+            self.call_peer = None
 
         try:
             if self.socket:
@@ -514,6 +921,10 @@ class SecureChatClient:
 def main():
     print("="*60)
     print("SECURE CHAT CLIENT - TLS Encrypted")
+    if VOICE_AVAILABLE:
+        print("Voice Calls: ENABLED")
+    else:
+        print("Voice Calls: DISABLED (install pyaudio to enable)")
     print("="*60)
 
     host = input("Server address [localhost]: ").strip() or "localhost"
