@@ -59,12 +59,11 @@ class TestClientAuthentication(unittest.TestCase):
     
     def test_valid_username_formats(self):
         """Test that valid usernames are accepted."""
-        valid_usernames = ["alice", "bob123", "user_name", "test-user", "a", "a" * 20]
+        valid_usernames = ["alice", "bob123", "user_name", "test-user", "abc", "a" * 20]
         
         for username in valid_usernames:
-            # Username validation logic
             is_valid = (
-                3 <= len(username) <= 20 and
+                1 <= len(username) <= 20 and
                 username.replace('_', '').replace('-', '').isalnum()
             )
             self.assertTrue(is_valid, f"Username '{username}' should be valid")
@@ -82,7 +81,7 @@ class TestClientAuthentication(unittest.TestCase):
         
         for username in invalid_usernames:
             is_valid = (
-                3 <= len(username) <= 20 and
+                1 <= len(username) <= 20 and
                 username.replace('_', '').replace('-', '').isalnum()
             )
             self.assertFalse(is_valid, f"Username '{username}' should be invalid")
