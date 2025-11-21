@@ -1,193 +1,217 @@
-# 🔐 Secure P2P Chat Application
+# 🟢 DartChat  
+### Secure TLS-Encrypted Chat Client with Rooms, File Transfer & Real-Time Voice Calling  
 
-A comprehensive peer-to-peer chat application with TLS encryption, peer discovery, and secure message exchange.
+![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
+![License](https://img.shields.io/badge/License-Academic-green.svg)
+![Platform](https://img.shields.io/badge/Platform-Linux%20VM-orange.svg)
+![Status](https://img.shields.io/badge/Status-Completed-success.svg)
 
-## 🌟 Features
+---
 
-### Security
-- **TLS 1.3 Encryption**: All peer-to-peer communications encrypted with TLS
-- **Self-Signed Certificates**: Automatic certificate generation for each node
-- **Secure Handshake**: Proper TLS handshake with authentication
-- **Key Management**: RSA 2048-bit keys with SHA-256 signatures
+## 🎥 Demo Video  
 
-### Architecture
-- **Peer Discovery**: Central discovery server for finding peers
-- **Direct P2P**: Messages sent directly between peers (not through server)
-- **Connection Management**: Automatic connection handling and cleanup
-- **Heartbeat System**: Keep-alive mechanism for peer presence
+https://github.com/fireblaster000/DartChat/blob/main/demo.mp4
+---
 
-### User Experience
-- **Username System**: Set and display usernames across the network
-- **CLI Interface**: Clean command-line interface
-- **Real-time Messaging**: Instant message delivery
-- **Connection Status**: Visual feedback for peer connections
+## 📝 Overview  
 
-## 📋 Components
+**DartChat** is a fully encrypted, real-time chat system built with Python, featuring:
 
-1. **generate_certificates.py**: TLS certificate generation
-2. **discovery_server.py**: Central peer discovery and registration
-3. **p2p_client.py**: P2P client with TLS encryption
-4. **chat_ui.py**: Command-line user interface
+- TLS-secured communication  
+- Multi-room chat architecture  
+- Private messaging  
+- File transfer (direct + broadcast)  
+- Real-time P2P voice calling over UDP  
+- Modern Tkinter GUI  
 
-## 🚀 Usage
+The project originally began as a **peer-to-peer design**, but following instructor feedback, evolved into a more robust, scalable **client–server model**, enhanced with TLS, room isolation, centralized routing, and server-side validation.
 
-### Step 1: Start Discovery Server
+---
 
-Run the discovery server first (in a separate terminal):
+## ✨ Features
 
-\`\`\`bash
-python scripts/discovery_server.py
-\`\`\`
+### 🔐 TLS Encryption
+- Enforced TLS 1.2+  
+- ECDHE forward secrecy  
+- AES-GCM cipher suites  
+- All signaling traffic (chat, private messages, file offers, call setup) encrypted  
 
-The server will listen on `0.0.0.0:9000` by default.
+### 🖥️ Tkinter GUI (Modern & Responsive)
+- Styled with Dartmouth green palette  
+- Chat window with autoscroll  
+- File send dialogs  
+- Incoming call popup  
+- Downloads folder integration  
 
-### Step 2: Start Chat Clients
+### 🏷️ Multi-Room System
+- `general`, plus unlimited user-created rooms  
+- Room membership tracked server-side  
+- Room history stored per room  
 
-Run chat clients for each user (each in separate terminals):
+### 💬 Private Messaging (PM)
+- TLS-routed direct messages  
+- Timestamped  
+- Fully isolated from room chat  
 
-\`\`\`bash
-python scripts/chat_ui.py
-\`\`\`
+### 📁 File Transfers
+- Base64 encoding / decoding  
+- Accept / reject workflow  
+- Supports single-user and broadcast sending  
+- Saved under `downloads/` automatically  
+- Supports files up to **10MB**  
 
-Follow the prompts:
-- Enter a unique username
-- Enter a listen port (e.g., 5001, 5002, etc.)
-- Enter discovery server address (default: localhost:9000)
+### 🔊 Real-Time Voice Calls
+- Call signaling through TLS  
+- Direct **UDP audio stream** after IP/port exchange  
+- PyAudio-based microphone & speaker  
+- Mute/unmute  
+- Graceful call termination  
+- Incoming call popup with Accept/Reject  
 
-### Step 3: Connect and Chat
+### 🛡 Server Safety & Stability
+- Username validation (length, characters, uniqueness)  
+- Room validity checks  
+- Call cleanup if either user disconnects  
+- Pending-file expiration  
+- Thread-safe client registry  
 
-Available commands:
-- `/list` - Discover available peers
-- `/connect <username>` - Connect to a peer
-- `/chat <username>` - Start chatting with a peer
-- `/peers` - Show connected peers
-- `/help` - Show help message
-- `/quit` - Exit application
+---
 
-## 🔒 Security Features
+## 🏗️ System Architecture
 
-### TLS Implementation
-- **Protocol**: TLS 1.3 (with fallback to TLS 1.2)
-- **Cipher Suites**: Strong encryption algorithms
-- **Certificate Validation**: X.509 certificate validation
-- **Key Exchange**: RSA key exchange
+### 🔐 **High-Level TLS Architecture**
 
-### Authentication
-- **Peer Authentication**: Username-based identification
-- **Certificate Validation**: Self-signed certificate verification
-- **Connection Handshake**: Secure handshake protocol
+        ┌───────────┐       TLS Handshake       ┌───────────┐
+        │  Client   │──────────────────────────►│  Server   │
+        │ (Tkinter) │◄──────────────────────────│ (TLS)     │
+        └─────┬─────┘       Encrypted Stream     └─────┬─────┘
+              │                                        │
+              │  JSON messages (chat, PM, files, calls)│
+              └────────────────────────────────────────┘
 
-### Data Protection
-- **Encryption**: All messages encrypted in transit
-- **Integrity**: Message integrity protection
-- **Confidentiality**: End-to-end encryption between peers
+---
 
-## 🏗️ Architecture
+### 📁 Project Structure
 
-\`\`\`
-┌─────────────┐         ┌─────────────┐
-│   Client A  │         │   Client B  │
-│  (User: Alice)        │  (User: Bob)│
-└──────┬──────┘         └──────┬──────┘
-       │                       │
-       │   1. Register         │
-       ├──────────┐   ┌────────┤
-       │          ▼   ▼        │
-       │   ┌──────────────┐    │
-       │   │  Discovery   │    │
-       │   │    Server    │    │
-       │   └──────────────┘    │
-       │          │             │
-       │   2. Discover Peers    │
-       │◄─────────┴────────────►│
-       │                        │
-       │   3. Direct TLS        │
-       │      Connection        │
-       │◄──────────────────────►│
-       │                        │
-       │   4. Encrypted         │
-       │      Messages          │
-       │◄──────────────────────►│
-\`\`\`
+project/
+│
+├── server.py                 # TLS Server
+├── client_gui.py             # Tkinter Client
+├── certs/
+│   ├── server.crt
+│   └── server.key
+└── downloads/                # auto-created, stores received files
 
-## 🛡️ Security Considerations
+---
 
-### Implemented
-✅ TLS encryption for all P2P communications
-✅ Certificate-based authentication
-✅ Secure key generation and management
-✅ Connection timeout and cleanup
-✅ Input validation and error handling
-✅ Peer identity verification
+### 🔧 Server Responsibilities
+- TLS termination & certificate handling  
+- Routing of:
+  - Room messages  
+  - Private messages  
+  - File offers & transfers  
+  - Call signaling (request/accept/reject/end)  
+- Managing room membership & message history  
+- Cleaning up dead clients & active calls  
+- Preventing impersonation or invalid transitions  
 
-### Production Recommendations
-- Use CA-signed certificates instead of self-signed
-- Implement certificate pinning
-- Add rate limiting for DoS protection
-- Implement message signing for non-repudiation
-- Add user authentication (password/token)
-- Enable certificate revocation checking
-- Use secure key storage (HSM/TPM)
+### 💻 Client Responsibilities
+- Graphical user interface  
+- Rendering chat, room changes, PMs, file offers  
+- Sending user actions (chat, PM, file send, call)  
+- Running audio sender/receiver threads  
+- Managing downloaded files  
+- Modal dialogs for file + call interactions  
 
-## 🧪 Testing
+### 🔐 TLS Security
 
-### Test Scenario 1: Two Peers
-1. Start discovery server
-2. Start Client A (Alice on port 5001)
-3. Start Client B (Bob on port 5002)
-4. Alice: `/list` to see Bob
-5. Alice: `/connect Bob`
-6. Alice: `/chat Bob`
-7. Alice types: "Hello Bob!"
-8. Bob receives encrypted message
+DartChat uses:
+- `ssl.SSLContext(PROTOCOL_TLS_CLIENT/SERVER)`  
+- Minimum TLS 1.2  
+- AES-GCM + ECDHE cipher suites (forward secrecy)  
+- Certificate-based encryption  
+- Disabled hostname verification only for VM testing  
+- Length-prefixed JSON protocol  
 
-### Test Scenario 2: Multiple Peers
-1. Start discovery server
-2. Start 3+ clients with different usernames/ports
-3. Each client can discover and connect to others
-4. Test message routing between all peers
+This ensures confidentiality, integrity, replay-attack prevention, and safe message framing.
 
-## 📦 Dependencies
+---
 
-- **cryptography**: For TLS certificates and encryption
-- **Python 3.7+**: Required for SSL/TLS support
+## 📦 Installation & Setup
 
-Install with:
-\`\`\`bash
-pip install cryptography
-\`\`\`
+### 1️⃣ Clone Repository
 
-## 🔧 Configuration
+- git clone <your-repo>
+- cd dartchat 
 
-### Discovery Server
-- **Host**: `0.0.0.0` (all interfaces)
-- **Port**: `9000`
-- **Peer Timeout**: 60 seconds
-- **Cleanup Interval**: 30 seconds
+### 2️⃣ Install Dependencies
 
-### P2P Client
-- **TLS Protocol**: TLS 1.2/1.3
-- **Key Size**: 2048 bits
-- **Certificate Validity**: 365 days
-- **Heartbeat Interval**: 20 seconds
+We recommend using Conda:
 
-## 🐛 Troubleshooting
+- conda create -n voice python=3.8
+- conda activate voice
+- pip install pyaudio
 
-### Connection Refused
-- Ensure discovery server is running
-- Check firewall settings
-- Verify port numbers are not in use
 
-### TLS Handshake Failed
-- Regenerate certificates
-- Check certificate paths
-- Verify TLS protocol support
+Install other standard libraries as needed (ssl, tkinter, struct, etc. — already in Python).
 
-### Peer Not Found
-- Wait for heartbeat update (~20 seconds)
-- Restart discovery server
-- Check network connectivity
+### 3️⃣ Fix PyAudio on Linux VM (if needed)
 
-## 📄 License
+PyAudio Fix:
+If your VM needs it, set:
 
-This is a demonstration project for educational purposes.
+mkdir -p $CONDA_PREFIX/etc/conda/activate.d
+echo 'export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH' \
+    > $CONDA_PREFIX/etc/conda/activate.d/env_vars.sh
+
+### ▶️ Running the Project
+Start server
+python3 server.py
+
+Start client
+python3 chat_gui_client.py
+
+
+### Connect using:
+
+- Host: localhost
+- Port: 9999
+- Username: <any-valid-name>
+
+
+### 📸 Screenshots
+
+- ![GUI Screenshot](images/gui.png)
+- ![TLS Diagram](images/tls_diagram.png)
+- ![Voice Call Flow](images/voice_diagram.png)
+- ![File Transfer](images/file_flow.png)
+
+### 🧱 Challenges Solved
+
+- Migrated from P2P → TLS server-based model
+
+- Avoiding Tkinter UI freeze with threaded network I/O
+
+- Stable JSON protocol with length-prefix headers
+
+- Voice streaming in a constrained VM environment
+
+- Cleaning up call state on drop/disconnect
+
+- Coordinating file offers, acceptances, rejections
+
+- Making PyAudio work inside conda/VM
+
+### 🚀 Future Enhancements
+
+- Group voice chat
+
+- Encrypted PMs beyond TLS (E2EE)
+
+- Message search / history persistence
+
+- Drag-and-drop file sending
+
+- Dockerized deployment
+
+- Windows/macOS packaging
