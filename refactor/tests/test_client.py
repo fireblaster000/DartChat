@@ -172,8 +172,12 @@ class TestCommandParsing(unittest.TestCase):
         
         for command, should_be_valid in test_cases:
             parts = command.split()
-            # Most commands need at least 2 parts (command + argument)
-            has_args = len(parts) >= 2
+            if parts[0] == '/pm':
+                # /pm needs recipient AND message (3 parts minimum)
+                has_args = len(parts) >= 3
+            else:
+                # Most other commands need at least 2 parts (command + argument)
+                has_args = len(parts) >= 2
             self.assertEqual(has_args, should_be_valid, f"Command '{command}' validation failed")
 
 
