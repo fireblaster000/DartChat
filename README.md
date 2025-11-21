@@ -5,12 +5,6 @@
 ![License](https://img.shields.io/badge/License-Academic-green.svg)
 ![Platform](https://img.shields.io/badge/Platform-Linux%20VM-orange.svg)
 ![Status](https://img.shields.io/badge/Status-Completed-success.svg)
-
----
-
-## 🎥 Demo Video  
-
-https://github.com/fireblaster000/DartChat/blob/main/demo.mp4
 ---
 
 ## 📝 Overview  
