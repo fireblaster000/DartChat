@@ -1,6 +1,8 @@
 """
 Secure Chat Server with TLS Encryption and Voice Call Support
 Implements multi-client support, chat rooms, file transfer, voice calls, and secure communication
+LLM Usage: Chatgpt/Claude to fix errors and add comments
+Authors: Ibrahim and Keith
 """
 import socket
 import ssl

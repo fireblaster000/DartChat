@@ -2,6 +2,9 @@
 DartChat - Secure Chat GUI Client with TLS Encryption and Voice Calls
 Modern GUI interface using tkinter with complete command support
 Enhanced with voice calling functionality
+
+LLM Usage: Chatgpt/Claude to fix errors and add comments
+Authors: Ibrahim and Keith
 """
 
 import os

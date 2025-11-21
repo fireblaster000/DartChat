@@ -1,6 +1,8 @@
 """
 Certificate Generation Script
 Generates self-signed TLS certificates for secure communication
+LLM Usage: Chatgpt/Claude to fix errors and add comments
+Authors: Ibrahim and Keith
 """
 import os
 from cryptography import x509
