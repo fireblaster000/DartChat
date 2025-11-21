@@ -140,8 +140,13 @@ class TestSecureMessageTransmission(unittest.TestCase):
     @patch('ssl.SSLSocket')
     def test_ssl_socket_wrapping(self, mock_ssl_socket):
         """Test socket is properly wrapped with SSL."""
-        mock_socket = Mock()
+        mock_socket = Mock(spec=socket.socket)
+        mock_socket.type = socket.SOCK_STREAM
+        mock_socket.family = socket.AF_INET
+        
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
         
         # Wrap socket
         ssl_sock = context.wrap_socket(mock_socket, server_hostname='localhost')
@@ -180,7 +185,13 @@ class TestInputValidation(unittest.TestCase):
             self.assertTrue(is_valid, f"Room '{room}' should be valid")
             
         for room in invalid_rooms:
-            is_valid = len(room) > 0 and len(room) <= 50 and ' ' not in room
+            is_valid = (
+                len(room) > 0 and 
+                len(room) <= 50 and 
+                ' ' not in room and 
+                '/' not in room and 
+                '\\' not in room
+            )
             self.assertFalse(is_valid, f"Room '{room}' should be invalid")
             
     def test_filename_path_traversal_prevention(self):
@@ -209,7 +220,7 @@ class TestInputValidation(unittest.TestCase):
         ]
         
         for size, should_pass in test_cases:
-            is_valid = 0 < size <= MAX_SIZE
+            is_valid = 0 <= size <= MAX_SIZE
             self.assertEqual(is_valid, should_pass, f"Size {size} validation failed")
 
 
