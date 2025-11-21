@@ -175,10 +175,10 @@ python3 chat_gui_client.py
 
 ### 📸 Screenshots
 
-- ![GUI Screenshot](images/gui.png)
-- ![TLS Diagram](images/tls_diagram.png)
-- ![Voice Call Flow](images/voice_diagram.png)
-- ![File Transfer](images/file_flow.png)
+![GUI Screenshot](images/gui.png)
+![TLS Diagram](images/tls_diagram.png)
+![Voice Call Flow](images/voice_diagram.png)
+![File Transfer](images/file_flow.png)
 
 ### 🧱 Challenges Solved
 
